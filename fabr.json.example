@@ -1,0 +1,30 @@
+{
+  "ModelConfigurations": [
+    {
+      "Name": "AzureProd",
+      "Provider": "Azure",
+      "Uri": "https://your-resource.cognitiveservices.azure.com/",
+      "Model": "gpt-4.1-mini",
+      "ApiKeyAlias": "AZURE_KEY"
+    },
+    {
+      "Name": "OpenAIProd",
+      "Provider": "OpenAI",
+      "Uri": "https://api.openai.com/v1",
+      "Model": "gpt-4.1-mini",
+      "ApiKeyAlias": "OPENAI_KEY",
+      "TimeoutSeconds": 60,
+      "MaxOutputTokens": 2048
+    }
+  ],
+  "ApiKeys": [
+    {
+      "Alias": "AZURE_KEY",
+      "Value": "your-azure-api-key-here"
+    },
+    {
+      "Alias": "OPENAI_KEY",
+      "Value": "your-openai-api-key-here"
+    }
+  ]
+}

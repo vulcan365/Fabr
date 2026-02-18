@@ -1,0 +1,692 @@
+@using Fabr.Client
+@using Fabr.Client.Services
+@using Fabr.Core
+@using Markdig
+@using Microsoft.AspNetCore.Components.Web
+@inject IClientContextFactory ClientContextFactory
+@inject IJSRuntime JSRuntime
+@implements IAsyncDisposable
+
+<div class="chat-dock-icon @GetIconStateClass()" @onclick="ToggleDock" title="@GetIconTooltip()">
+    <i class="@Icon"></i>
+    @if (_hasUnreadMessages)
+    {
+        <span class="chat-dock-badge"></span>
+    }
+</div>
+
+@if (_isExpanded)
+{
+    <div @ref="_panelElement" class="chat-dock-panel @GetPositionClass()" id="@_panelId">
+        <div class="chat-dock-header">
+            <div class="chat-dock-title">
+                <i class="@Icon me-2"></i>
+                <span>@Title</span>
+            </div>
+            <div class="chat-dock-actions">
+                <button class="chat-dock-btn" @onclick="ClearMessages" title="Clear chat">
+                    <i class="bi bi-trash"></i>
+                </button>
+                <button class="chat-dock-btn" @onclick="ToggleDock" title="Minimize">
+                    <i class="bi bi-dash-lg"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="chat-dock-messages" @ref="_messagesContainer">
+            @if (_messages.Count == 0 && !_isWaitingForResponse && string.IsNullOrEmpty(_thinkingMessage))
+            {
+                <div class="chat-dock-welcome">
+                    <div class="chat-dock-welcome-icon">
+                        <i class="@Icon"></i>
+                    </div>
+                    <p>@WelcomeMessage</p>
+                </div>
+            }
+            else
+            {
+                @foreach (var message in _messages)
+                {
+                    <div class="chat-dock-message @(message.IsFromUser ? "chat-dock-message-user" : "chat-dock-message-agent")">
+                        <div class="chat-dock-message-avatar">
+                            @if (message.IsFromUser)
+                            {
+                                <i class="bi bi-person-fill"></i>
+                            }
+                            else
+                            {
+                                <i class="@Icon"></i>
+                            }
+                        </div>
+                        <div class="chat-dock-message-content">
+                            <div class="chat-dock-message-text">
+                                @if (message.IsFromUser)
+                                {
+                                    @message.Text
+                                }
+                                else
+                                {
+                                    @((MarkupString)(message.RenderedHtml ?? message.Text))
+                                }
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(_thinkingMessage))
+                {
+                    <div class="chat-dock-message chat-dock-message-agent chat-dock-thinking">
+                        <div class="chat-dock-message-avatar">
+                            <i class="@Icon"></i>
+                        </div>
+                        <div class="chat-dock-message-content">
+                            <div class="chat-dock-message-text chat-dock-typing">
+                                <span class="thinking-text">Thinking: @_thinkingMessage</span>
+                            </div>
+                        </div>
+                    </div>
+                }
+                @if (_isWaitingForResponse)
+                {
+                    <div class="chat-dock-message chat-dock-message-agent">
+                        <div class="chat-dock-message-avatar">
+                            <i class="@Icon"></i>
+                        </div>
+                        <div class="chat-dock-message-content">
+                            <div class="chat-dock-message-text chat-dock-typing">
+                                <span class="typing-dot"></span>
+                                <span class="typing-dot"></span>
+                                <span class="typing-dot"></span>
+                            </div>
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <div class="chat-dock-error">
+                <i class="bi bi-exclamation-triangle me-1"></i>@_error
+                <button class="btn-close btn-close-sm" @onclick="() => _error = null"></button>
+            </div>
+        }
+
+        <div class="chat-dock-input-container">
+            <div class="chat-dock-input-wrapper">
+                <textarea class="chat-dock-input"
+                          @bind="_currentMessage"
+                          @bind:event="oninput"
+                          @onkeydown="HandleKeyDown"
+                          placeholder="Type a message..."
+                          disabled="@(_isWaitingForResponse || !_isConnected)"
+                          rows="1"></textarea>
+                <button class="chat-dock-send-btn"
+                        @onclick="SendMessage"
+                        disabled="@(_isWaitingForResponse || string.IsNullOrWhiteSpace(_currentMessage) || !_isConnected)">
+                    <i class="bi bi-send-fill"></i>
+                </button>
+            </div>
+            <div class="chat-dock-status">
+                @if (_isConnected)
+                {
+                    <span class="status-connected" title="@GetHealthTooltip()">
+                        <i class="bi bi-circle-fill @GetHealthColorClass()"></i> @GetHealthStatusText()
+                    </span>
+                    @if (_agentHealth?.MessagesProcessed != null && _agentHealth.MessagesProcessed > 0)
+                    {
+                        <span class="status-messages ms-2" title="Messages processed">
+                            <i class="bi bi-chat-square-text"></i> @_agentHealth.MessagesProcessed.Value.ToString("N0")
+                        </span>
+                    }
+                }
+                else if (_isConnecting)
+                {
+                    <span class="status-connecting"><i class="bi bi-circle-fill"></i> Connecting...</span>
+                }
+                else
+                {
+                    <span class="status-disconnected">
+                        <i class="bi bi-circle-fill"></i> Disconnected
+                        <button class="btn btn-link btn-sm p-0 ms-1" @onclick="ConnectAsync">Retry</button>
+                    </span>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>
+    /// The user handle/identifier for the current user. This is required.
+    /// </summary>
+    [Parameter, EditorRequired]
+    public string UserHandle { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The agent handle to connect to (e.g., "document-agent", "curia").
+    /// </summary>
+    [Parameter, EditorRequired]
+    public string AgentHandle { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The agent type to create (e.g., "DocumentAgent", "CuriaAgent").
+    /// </summary>
+    [Parameter, EditorRequired]
+    public string AgentType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The system prompt for the agent.
+    /// </summary>
+    [Parameter]
+    public string SystemPrompt { get; set; } = "You are a helpful AI assistant.";
+
+    /// <summary>
+    /// Display title for the chat dock.
+    /// </summary>
+    [Parameter]
+    public string Title { get; set; } = "Assistant";
+
+    /// <summary>
+    /// Bootstrap icon class for the dock icon.
+    /// </summary>
+    [Parameter]
+    public string Icon { get; set; } = "bi bi-chat-dots";
+
+    /// <summary>
+    /// Welcome message shown when chat is empty.
+    /// </summary>
+    [Parameter]
+    public string WelcomeMessage { get; set; } = "How can I help you today?";
+
+    /// <summary>
+    /// Tooltip shown on hover over the icon.
+    /// </summary>
+    [Parameter]
+    public string Tooltip { get; set; } = "Open chat";
+
+    /// <summary>
+    /// Position where the chat panel appears on screen.
+    /// </summary>
+    [Parameter]
+    public ChatDockPosition Position { get; set; } = ChatDockPosition.BottomRight;
+
+    /// <summary>
+    /// Additional arguments to pass to the agent configuration.
+    /// These are merged with the default args (userId is always included).
+    /// </summary>
+    [Parameter]
+    public Dictionary<string, string>? AdditionalArgs { get; set; }
+
+    /// <summary>
+    /// When true, defers agent creation until the dock is first expanded.
+    /// Useful when rendering many ChatDock components (e.g., in table rows)
+    /// to avoid creating agents that may never be used.
+    /// </summary>
+    [Parameter]
+    public bool LazyLoad { get; set; }
+
+    /// <summary>
+    /// Manager for coordinating multiple chat docks.
+    /// </summary>
+    [CascadingParameter]
+    public ChatDockManager? DockManager { get; set; }
+
+    private static readonly MarkdownPipeline _markdownPipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .Build();
+
+    private IClientContext? _clientContext;
+    private List<ChatMessage> _messages = new();
+    private string _currentMessage = string.Empty;
+    private string? _error;
+    private string? _thinkingMessage;
+    private bool _isWaitingForResponse;
+    private bool _isConnected;
+    private bool _isConnecting;
+    private bool _isExpanded;
+    private bool _hasUnreadMessages;
+    private bool _agentExists;
+    private ElementReference _messagesContainer;
+    private ElementReference _panelElement;
+    private CancellationTokenSource? _thinkingFadeCts;
+    private AgentHealthStatus? _agentHealth;
+    private readonly string _panelId = $"chat-dock-panel-{Guid.NewGuid():N}";
+    private bool _panelMovedToBody;
+    private IJSObjectReference? _jsModule;
+
+    private string DockId => $"{AgentHandle}_{GetHashCode()}";
+
+    private string GetPositionClass() => Position switch
+    {
+        ChatDockPosition.BottomLeft => "chat-dock-bottom-left",
+        ChatDockPosition.Right => "chat-dock-right",
+        ChatDockPosition.Left => "chat-dock-left",
+        _ => "chat-dock-bottom-right"
+    };
+
+    private string GetIconStateClass()
+    {
+        if (_isExpanded) return "is-open";
+        if (_hasUnreadMessages) return "has-unread";
+        if (_isConnected) return "is-connected";
+        if (LazyLoad && !_isConnected)
+        {
+            return _agentExists ? "is-lazy has-history" : "is-lazy";
+        }
+        return "";
+    }
+
+    private string GetIconTooltip()
+    {
+        if (_isExpanded) return "Minimize chat";
+        if (_hasUnreadMessages) return "New message available";
+        if (_isConnected) return Tooltip;
+        if (LazyLoad && !_isConnected)
+        {
+            return _agentExists ? $"{Tooltip} (has chat history)" : $"{Tooltip} (click to start)";
+        }
+        return Tooltip;
+    }
+
+    private static string RenderMarkdown(string markdown)
+    {
+        if (string.IsNullOrEmpty(markdown))
+            return string.Empty;
+        return Markdown.ToHtml(markdown, _markdownPipeline);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Register with dock manager if available
+        DockManager?.Register(DockId, OnExpandedChanged);
+
+        if (!LazyLoad)
+        {
+            await ConnectAsync();
+        }
+        else
+        {
+            // When lazy loading, check if agent was previously created
+            await CheckAgentExistsAsync();
+        }
+    }
+
+    private async Task CheckAgentExistsAsync()
+    {
+        try
+        {
+            // ClientContext is cached per handle, so this is cheap for multiple ChatDocks with the same user
+            var context = await ClientContextFactory.GetOrCreateAsync(UserHandle);
+            _agentExists = await context.IsAgentTracked(AgentHandle);
+        }
+        catch
+        {
+            // Silently ignore - we'll just show the default lazy state
+            _agentExists = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Import JS module on first render
+        if (firstRender)
+        {
+            try
+            {
+                _jsModule = await JSRuntime.InvokeAsync<IJSObjectReference>(
+                    "import", "./_content/Fabr.Client/fabr.js");
+            }
+            catch
+            {
+                // Ignore JS errors during prerendering
+            }
+        }
+
+        // Move panel to document.body to escape any CSS stacking context issues
+        if (_isExpanded && !_panelMovedToBody && _jsModule != null)
+        {
+            try
+            {
+                await _jsModule.InvokeVoidAsync("moveToBody", _panelId);
+                _panelMovedToBody = true;
+            }
+            catch
+            {
+                // Ignore JS errors during prerendering
+            }
+        }
+        else if (!_isExpanded)
+        {
+            _panelMovedToBody = false;
+        }
+    }
+
+    private void OnExpandedChanged(bool expanded)
+    {
+        _isExpanded = expanded;
+        if (expanded)
+        {
+            _hasUnreadMessages = false;
+            // Connect on first expand if lazy loading
+            if (LazyLoad && !_isConnected && !_isConnecting)
+            {
+                InvokeAsync(ConnectAsync);
+            }
+        }
+        else
+        {
+            _panelMovedToBody = false;
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleDock()
+    {
+        if (DockManager != null)
+        {
+            DockManager.Toggle(DockId);
+            // When using DockManager, connection is triggered via OnExpandedChanged
+        }
+        else
+        {
+            _isExpanded = !_isExpanded;
+            if (_isExpanded)
+            {
+                _hasUnreadMessages = false;
+                // Connect on first expand if lazy loading
+                if (LazyLoad && !_isConnected && !_isConnecting)
+                {
+                    await ConnectAsync();
+                }
+            }
+            else
+            {
+                _panelMovedToBody = false;
+            }
+            StateHasChanged();
+        }
+    }
+
+    private async Task ConnectAsync()
+    {
+        if (_isConnecting || _isConnected) return;
+
+        try
+        {
+            _isConnecting = true;
+            _error = null;
+            StateHasChanged();
+
+            _clientContext = await ClientContextFactory.GetOrCreateAsync(UserHandle);
+            _clientContext.AgentMessageReceived += OnAgentMessageReceived;
+
+            var args = new Dictionary<string, string>
+            {
+                { "userId", UserHandle }
+            };
+
+            // Merge additional args if provided
+            if (AdditionalArgs != null)
+            {
+                foreach (var kvp in AdditionalArgs)
+                {
+                    args[kvp.Key] = kvp.Value;
+                }
+            }
+
+            var agentConfig = new AgentConfiguration
+            {
+                Handle = AgentHandle,
+                AgentType = AgentType,
+                SystemPrompt = SystemPrompt,
+                Args = args
+            };
+
+            _agentHealth = await _clientContext.CreateAgent(agentConfig);
+
+            // Check if agent created successfully
+            if (_agentHealth.State == HealthState.Unhealthy)
+            {
+                _error = $"Agent issue: {_agentHealth.Message}";
+            }
+
+            _isConnected = true;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to connect: {ex.Message}";
+            _isConnected = false;
+        }
+        finally
+        {
+            _isConnecting = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnAgentMessageReceived(object? sender, AgentMessage message)
+    {
+        // Resolve the expected agent handle - if AgentHandle contains ':', use as-is; otherwise prefix with UserHandle
+        var expectedFromHandle = AgentHandle.Contains(':') ? AgentHandle : $"{UserHandle}:{AgentHandle}";
+
+        if (message.FromHandle == expectedFromHandle && message.ToHandle == UserHandle)
+        {
+            InvokeAsync(() =>
+            {
+                // Handle "thinking" messages - update the thinking status instead of adding to chat
+                if (message.MessageType == "thinking")
+                {
+                    // Cancel any previous fade timer
+                    _thinkingFadeCts?.Cancel();
+                    _thinkingFadeCts = new CancellationTokenSource();
+
+                    _thinkingMessage = message.Message;
+                    StateHasChanged();
+
+                    // Auto-fade after 3 seconds
+                    var cts = _thinkingFadeCts;
+                    _ = Task.Delay(3000, cts.Token).ContinueWith(t =>
+                    {
+                        if (!t.IsCanceled)
+                        {
+                            InvokeAsync(() =>
+                            {
+                                _thinkingMessage = null;
+                                StateHasChanged();
+                            });
+                        }
+                    });
+                    return;
+                }
+
+                // Regular message - add to chat history with pre-rendered markdown
+                var messageText = message.Message ?? string.Empty;
+                _messages.Add(new ChatMessage
+                {
+                    Text = messageText,
+                    RenderedHtml = RenderMarkdown(messageText),
+                    IsFromUser = false,
+                    Timestamp = DateTime.Now
+                });
+                _isWaitingForResponse = false;
+                _thinkingMessage = null; // Clear thinking message when final response arrives
+                _thinkingFadeCts?.Cancel();
+
+                // Mark as unread if dock is collapsed
+                if (!_isExpanded)
+                {
+                    _hasUnreadMessages = true;
+                }
+
+                StateHasChanged();
+            });
+        }
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            await SendMessage();
+        }
+    }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(_currentMessage) || _clientContext == null || !_isConnected)
+            return;
+
+        var messageText = _currentMessage.Trim();
+        _currentMessage = string.Empty;
+        _error = null;
+        _thinkingMessage = null;
+        _thinkingFadeCts?.Cancel();
+
+        _messages.Add(new ChatMessage
+        {
+            Text = messageText,
+            IsFromUser = true,
+            Timestamp = DateTime.Now
+        });
+
+        _isWaitingForResponse = true;
+        StateHasChanged();
+
+        try
+        {
+            var request = new AgentMessage
+            {
+                FromHandle = UserHandle,
+                ToHandle = AgentHandle,  // ClientGrain resolves this (prefixes with UserHandle if no ':')
+                Message = messageText,
+                MessageType = "chat"
+            };
+
+            await _clientContext.SendMessage(request);
+
+            // Refresh health non-blocking after send
+            _ = RefreshHealthAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to send: {ex.Message}";
+            _isWaitingForResponse = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ClearMessages()
+    {
+        _messages.Clear();
+        StateHasChanged();
+    }
+
+    private async Task RefreshHealthAsync()
+    {
+        if (_clientContext == null || !_isConnected) return;
+
+        try
+        {
+            _agentHealth = await _clientContext.GetAgentHealth(AgentHandle, HealthDetailLevel.Detailed);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch
+        {
+            // Silently ignore health refresh failures
+        }
+    }
+
+    private string GetHealthStatusText()
+    {
+        if (_agentHealth == null) return "Connected";
+
+        return _agentHealth.State switch
+        {
+            HealthState.Healthy => "Healthy",
+            HealthState.Degraded => "Degraded",
+            HealthState.Unhealthy => "Unhealthy",
+            HealthState.NotConfigured => "Starting...",
+            _ => "Connected"
+        };
+    }
+
+    private string GetHealthColorClass()
+    {
+        if (_agentHealth == null) return "text-success";
+
+        return _agentHealth.State switch
+        {
+            HealthState.Healthy => "text-success",
+            HealthState.Degraded => "text-warning",
+            HealthState.Unhealthy => "text-danger",
+            HealthState.NotConfigured => "text-secondary",
+            _ => "text-success"
+        };
+    }
+
+    private string GetHealthTooltip()
+    {
+        if (_agentHealth == null) return "Agent connected";
+
+        var tooltip = $"State: {_agentHealth.State}";
+        if (!string.IsNullOrEmpty(_agentHealth.Message))
+        {
+            tooltip += $"\n{_agentHealth.Message}";
+        }
+        if (_agentHealth.AgentType != null)
+        {
+            tooltip += $"\nType: {_agentHealth.AgentType}";
+        }
+        return tooltip;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        DockManager?.Unregister(DockId);
+        _thinkingFadeCts?.Cancel();
+        _thinkingFadeCts?.Dispose();
+
+        // Remove panel from body if it was moved there
+        if (_panelMovedToBody && _jsModule != null)
+        {
+            try
+            {
+                await _jsModule.InvokeVoidAsync("removePanel", _panelId);
+            }
+            catch
+            {
+                // Ignore errors during disposal
+            }
+        }
+
+        // Dispose JS module
+        if (_jsModule != null)
+        {
+            try
+            {
+                await _jsModule.DisposeAsync();
+            }
+            catch
+            {
+                // Ignore errors during disposal
+            }
+            _jsModule = null;
+        }
+
+        if (_clientContext != null)
+        {
+            _clientContext.AgentMessageReceived -= OnAgentMessageReceived;
+            await _clientContext.DisposeAsync();
+            _clientContext = null;
+        }
+    }
+
+    private class ChatMessage
+    {
+        public string Text { get; set; } = string.Empty;
+        public string? RenderedHtml { get; set; }
+        public bool IsFromUser { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+}

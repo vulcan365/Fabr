@@ -1,0 +1,43 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<Title>Fabr Sdk</Title>
+		<Description>SDK for building AI agents with the Fabr framework</Description>
+	</PropertyGroup>
+
+	<ItemGroup>
+	  <Compile Remove="Memory\**" />
+	  <EmbeddedResource Remove="Memory\**" />
+	  <None Remove="Memory\**" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Fabr.Core\Fabr.Core.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+			<_Parameter1>Fabr.Host</_Parameter1>
+		</AssemblyAttribute>
+
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="OpenTelemetry.Api" Version="1.15.0" />
+		<PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.2" />
+	</ItemGroup>
+	
+	<ItemGroup>
+		<PackageReference Include="Azure.Identity" Version="1.17.1" />
+		<PackageReference Include="Azure.AI.OpenAI" Version="2.8.0-beta.1" />
+		<PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-preview.260128.1" />
+		<PackageReference Include="Microsoft.Agents.AI.OpenAi" Version="1.0.0-preview.260128.1" />
+	</ItemGroup>
+
+</Project>

@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <Version>0.5.10</Version>
+    <Authors>Vulcan365 LLC</Authors>
+    <Company>Vulcan365 LLC</Company>
+    <Copyright>Copyright (c) 2025 Vulcan365 LLC</Copyright>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/vulcan365/Fabr</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/vulcan365/Fabr</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>
